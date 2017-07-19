@@ -664,6 +664,7 @@ void createJavaContext(void)
 		for (i = 1; i < EJ_VARUPDATE_COUNT; ++i)
 			if (i != EJ_VARUPDATE_FILENAME)
 				update_var_in_js(i);
+		syncWebAuthorizations();
 	}
 // set the URL, then create context, so the cookies will be right.
 	update_var_in_js(EJ_VARUPDATE_FILENAME);
@@ -1602,6 +1603,36 @@ void update_var_in_js(int varid)
 	if (head.proplength)
 		writeToJS(s, head.proplength);
 }				/* update_var_in_js */
+
+void update_webauth_in_js(const char *host, const char *dir, const char *realm,
+                          const char *user_pass, int port, bool proxy)
+{
+	int length;
+	if (!js_pid || js1)
+		return;
+	debugPrint(5, "> update_webauth %s, %s, %s", host, dir, realm);
+	head.cmd = EJ_CMD_UPDATEAUTH;
+	head.obj = 0;
+	head.lineno = 0;
+	head.n = 0;
+	writeHeader();
+
+	/* ugly serialization: send elements one at a time */
+	length = strlen(host);
+	writeToJS(&length, sizeof(length));
+	writeToJS(host, length);
+	length = strlen(dir);
+	writeToJS(&length, sizeof(length));
+	writeToJS(dir, length);
+	length = strlen(realm);
+	writeToJS(&length, sizeof(length));
+	writeToJS(realm, length);
+	length = strlen(user_pass);
+	writeToJS(&length, sizeof(length));
+	writeToJS(user_pass, length);
+	writeToJS(&port, sizeof(port));
+	writeToJS(&proxy, sizeof(proxy));
+}				/* update_webauth_in_js */
 
 /*********************************************************************
 Everything beyond this point is, perhaps, part of a DOM support layer

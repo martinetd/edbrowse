@@ -2335,6 +2335,30 @@ propreturn:
 		propval = 0;
 		break;
 
+	case EJ_CMD_UPDATEAUTH:
+		{
+			int length;
+			char *host, *dir, *realm, *user_pass;
+			int port;
+			bool proxy;
+
+			readFromEb(&length, sizeof(length));
+			host = readString(length);
+			readFromEb(&length, sizeof(length));
+			dir = readString(length);
+			readFromEb(&length, sizeof(length));
+			realm = readString(length);
+			readFromEb(&length, sizeof(length));
+			user_pass = readString(length);
+			readFromEb(&port, sizeof(port));
+			readFromEb(&proxy, sizeof(proxy));
+
+			rawAddWebAuthorizations(host, dir, realm, user_pass, port, proxy);
+			/* no free, strings belong to web auth now */
+		}
+		break;
+
+
 	default:
 		fprintf(stderr, "Unexpected message command %d from edbrowse\n",
 			head.cmd);

@@ -5,6 +5,9 @@ bool getUserPass(const char *url, char *creds, bool find_proxy) ;
 bool getUserPassRealm(const char *url, char *creds, const char *realm);
 bool addWebAuthorization(const char *url, const char *credentials, bool proxy,
 			 const char *realm);
+void syncWebAuthorizations();
+void rawAddWebAuthorizations(char *host, char *dir, char *realm,
+                             char *user_pass, int port, bool proxy);
 
 /* sourcefile=buffers.c */
 void removeHiddenNumbers(pst p, uchar terminate);
@@ -94,6 +97,8 @@ jsobjtype instantiate(jsobjtype parent, const char *name, const char *classname)
 int set_property_function(jsobjtype parent, const char *name, const char *body) ;
 int get_arraylength(jsobjtype a);
 void update_var_in_js(int varid);
+void update_webauth_in_js(const char *host, const char *dir, const char *realm,
+			  const char *user_pass, int port, bool proxy);
 char *get_property_option(jsobjtype obj) ;
 void setupJavaDom(void) ;
 char *get_property_url(jsobjtype owner, bool action) ;

@@ -30,6 +30,7 @@ enum ej_cmd {
 	EJ_CMD_ARLEN,
 	EJ_CMD_CALL,
 	EJ_CMD_VARUPDATE,
+	EJ_CMD_UPDATEAUTH,
 };
 
 enum ej_highstat {

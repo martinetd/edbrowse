@@ -135,7 +135,50 @@ addWebAuthorization(const char *url,
 		a->realm = cloneString(realm);
 
 	a->user_password = cloneString(credentials);
+	update_webauth_in_js(a->host, a->directory, a->realm,
+			     a->user_password, a->port, a->proxy);
 	debugPrint(3, "%s authorization for %s%s",
 		   updated ? "updated" : "new", a->host, a->directory);
 	return true;
 }				/* addWebAuthorization */
+
+void syncWebAuthorizations()
+{
+	struct httpAuth *a;
+
+	foreach(a, authlist) {
+		update_webauth_in_js(a->host, a->directory, a->realm,
+				     a->user_password, a->port, a->proxy);
+	}
+}
+void rawAddWebAuthorizations(char *host, char *dir, char *realm,
+			     char *user_pass, int port, bool proxy)
+{
+	struct httpAuth *a;
+
+	/* check if duplicate, only update password and free other fields */
+	foreach(a, authlist) {
+		if (a->proxy == proxy &&
+		    a->port == port &&
+		    stringEqualCI(a->host, host) &&
+		    (proxy || !strcmp(a->directory, dir))) {
+			nzFree(a->user_password);
+			a->user_password = user_pass;
+			nzFree(host);
+			nzFree(dir);
+			nzFree(realm);
+			return;
+		}
+	}
+
+	a = allocZeroMem(sizeof(struct httpAuth));
+	addToListFront(&authlist, a);
+
+	/* strings were already allocated for us */
+	a->host = host;
+	a->directory = dir;
+	a->realm = realm;
+	a->user_password = user_pass;
+	a->port = port;
+	a->proxy = proxy;
+}
