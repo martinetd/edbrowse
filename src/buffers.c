@@ -1749,6 +1749,8 @@ intext:
 	rc = addTextToBuffer((const pst)rbuf, fileSize, endRange,
 			     !isURL(filename));
 	nzFree(rbuf);
+	serverData = emptyString;
+	serverDataLen = 0;
 	return rc;
 }				/* readFile */
 
