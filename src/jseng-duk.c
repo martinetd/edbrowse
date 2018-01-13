@@ -33,6 +33,7 @@ Exit codes are as follows:
 #endif // DOSLIKE
 
 #include <duktape.h>
+#include <arpa/inet.h>
 
 static void processError(void);
 
@@ -238,10 +239,10 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 	static unsigned char curmsg = DUK_DBG_IB_EOM;
 	static unsigned char command;
 	static unsigned char word;
-	static size_t strlen;
+	static ssize_t strlen = 0;
 
 	unsigned char *buf = (unsigned char*) buffer; /* for unsigned arithmetic */
-	int sz = 0;
+	int sz = 0, read_bytes = 0;
 
 	if (!handshake_seen) {
 		if (buffer[0] != '2') {
@@ -252,17 +253,49 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 		return length;
 	}
 
+read_more:
+#define READ_MORE(x) do { read_bytes += x; buf += x; length -= x; goto read_more; } while(0)
+	if (length == 0)
+		return read_bytes;
+
+	switch (strlen) {
+	case -DUK_DBG_IB_STR4:
+	case -DUK_DBG_IB_BUF4:
+	case -DUK_DBG_IB_INT4:
+		if (length < 4) {
+			fprintf(stderr, "unhandled str4 without at least 4 bytes\n");
+			return 0;
+		}
+		strlen = ntohl(*(uint32_t*)buf);
+		READ_MORE(4);
+	case -DUK_DBG_IB_STR2:
+	case -DUK_DBG_IB_BUF2:
+		if (length < 2) {
+			fprintf(stderr, "unhandled str2 without at least 2 bytes\n");
+			return 0;
+		}
+		strlen = ntohs(*(uint16_t*)buf);
+		READ_MORE(2);
+	default:
+		if (strlen < 0) {
+			fprintf(stderr, "unhandled dvalue: %zx\n", -strlen);
+			return 0;
+		}
+		break;
+	}
+
 	switch (curmsg) {
-	case DUK_DBG_IB_EOM: /* new message */
+	case DUK_DBG_IB_EOM:
+		/* new message */
 		curmsg = buf[0];
 		command = 0;
-		return 1;
+		READ_MORE(1);
 	case DUK_DBG_IB_NOTIFY:
 		switch (command) {
 		case 0:
 			command = buf[0] - 0x80; /* small int */
 			word = 0;
-			return 1;
+			READ_MORE(1);
 		case DUK_DBG_CMD_STATUS:
 			/* NFY <int: 1> <int: state> <str: filename> <str: funcname> <int: linenumber> <int: pc> EOM */
 			switch (word) {
@@ -274,35 +307,50 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 					debug_buffer[debug_buflen++] = DUK_DBG_IB_EOM;
 				}
 				word++;
-				return 1;
+				READ_MORE(1);
 			case 1:
 			case 3:
-				if (buf[0] < 0x60 || buf[0] > 0x7f) {
-					fprintf(stderr, "unhandled string longer than 32\n");
-					return 0;
+				if (buf[0] >= 0x60 && buf[0] < 0x80) {
+					strlen = buf[0] - 0x60;
+				} else {
+					strlen = -buf[0];
 				}
-				strlen = buf[0] - 0x60;
 				word++;
-				return 1;
+				READ_MORE(1);
 			case 2:
 			case 4:
 				sz = MIN(length, strlen);
 				strlen -= sz;
 				if (strlen == 0)
 					word++;
-				return sz;
+				READ_MORE(sz);
 			case 5:
 			case 6:
+				if (buf[0] >= 0xc0) {
+					if (length < 2) {
+						fprintf(stderr, "int over two bytes in two messages not supported\n");
+						return 0;
+					}
+					strlen = ((buf[0] - 0xc0) << 8) + buf[1];
+					sz = 2;
+				} else if (buf[0] >= 0x80) {
+					strlen = buf[0] - 0x80;
+					sz = 1;
+				} else {
+					strlen = -buf[0];
+					READ_MORE(1);
+				}
+				strlen = 0;
 				word++;
-				return 1;
+				READ_MORE(sz);
 			case 7:
 			default:
 				if (buf[0] != DUK_DBG_IB_EOM) {
-					fprintf(stderr, "should have gotten EOM here...\n");
+					fprintf(stderr, "(status) should have gotten EOM here... got %hx\n", buf[0]);
 					return 0;
 				}
 				curmsg = DUK_DBG_IB_EOM;
-				return 1;
+				READ_MORE(1);
 			}
 
 		case DUK_DBG_CMD_THROW:
@@ -311,41 +359,59 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 			case 0:
 				printf("%s throw: ", buf[0] - 0x80 == 0 ? "caught" : "uncaught");
 				word++;
-				return 1;
+				READ_MORE(1);
 			case 1:
 			case 3:
-				if (buf[0] < 0x60 || buf[0] > 0x7f) {
-					fprintf(stderr, "unhandled string longer than 32\n");
-					return 0;
+				if (buf[0] >= 0x60 && buf[0] < 0x80) {
+					strlen = buf[0] - 0x60;
+				} else {
+					strlen = -buf[0];
 				}
-				strlen = buf[0] - 0x60;
 				word++;
-				return 1;
+				READ_MORE(1);
 			case 2:
 				sz = MIN(length, strlen);
 				strlen -= sz;
 				if (strlen == 0)
 					word++;
 				printf("%*s", sz, buf);
-				return sz;
+				READ_MORE(sz);
 			case 4:
 				sz = MIN(length, strlen);
 				strlen -= sz;
 				if (strlen == 0)
 					word++;
-				return sz;
+				READ_MORE(sz);
 			case 5:
-				printf("(line %d)\n", buf[0]-0x80);
+				sz = 0;
+				if (!strlen) {
+					if (buf[0] >= 0xc0) {
+						if (length < 2) {
+							fprintf(stderr, "int over two bytes in two messages not supported\n");
+							return 0;
+						}
+						strlen = ((buf[0] - 0xc0) << 8) + buf[1];
+						sz = 2;
+					} else if (buf[0] >= 0x80) {
+						strlen = buf[0] - 0x80;
+						sz = 1;
+					} else {
+						strlen = -buf[0];
+						READ_MORE(1);
+					}
+				}
+				printf(" (line %zd)\n", strlen);
+				strlen = 0;
 				word++;
-				return 1;
+				READ_MORE(sz);
 			case 6:
 			default:
 				if (buf[0] != DUK_DBG_IB_EOM) {
-					fprintf(stderr, "should have gotten EOM here...\n");
+					fprintf(stderr, "(throw) should have gotten EOM here... got %hx\n", buf[0]);
 					return 0;
 				}
 				curmsg = DUK_DBG_IB_EOM;
-				return 1;
+				READ_MORE(1);
 			}
 		case DUK_DBG_CMD_DETACHING:
 			/* NFY <int: 6> <int: reason> [<str: msg>] EOM */
@@ -353,29 +419,29 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 			case 0:
 				printf("detach reason: %hd ", buf[0] - 0x80);
 				word++;
-				return 1;
+				READ_MORE(1);
 			case 2:
 				sz = MIN(length, strlen);
 				strlen -= sz;
 				if (strlen == 0)
 					word++;
 				printf("%*s", sz, buf);
-				return sz;
+				READ_MORE(sz);
 			case 1:
 			case 3:
 			default:
 				if (buf[0] != DUK_DBG_IB_EOM) {
-					if (buf[0] < 0x60 || buf[0] > 0x7f) {
-						fprintf(stderr, "unhandled string longer than 32\n");
-						return 0;
+					if (buf[0] >= 0x60 && buf[0] < 0x80) {
+						strlen = buf[0] - 0x60;
+					} else {
+						strlen = -buf[0];
 					}
-					strlen = buf[0] - 0x60;
 					word++;
-					return 1;
+					READ_MORE(1);
 				}
 				printf("\n");
 				curmsg = DUK_DBG_IB_EOM;
-				return 1;
+				READ_MORE(1);
 			}
 
 		default:
@@ -385,9 +451,10 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 
 	case DUK_DBG_IB_REPLY:
 		/* for now just skip until EOM. and hope no null byte in any string */
+		sz = 0;
 		while (buf[sz++] != DUK_DBG_IB_EOM);
 		curmsg = DUK_DBG_IB_EOM;
-		return sz;
+		READ_MORE(sz);
 	default:
 		fprintf(stderr, "unhandled marker: %d\n", curmsg);
 		return 0;
