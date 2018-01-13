@@ -139,6 +139,312 @@ void disconnectTagObject(struct htmlTag *t)
 	t->jv = NULL;
 }
 
+static char debug_buffer[256];
+static int  debug_buflen;
+
+static duk_size_t debugger_read_cb(void *udata, char *buffer, duk_size_t length) {
+	size_t copied = 0;
+	if (debug_buflen) {
+		copied = MIN(length, debug_buflen);
+		memcpy(buffer, debug_buffer, copied);
+		debug_buflen -= copied;
+	}
+	/* if buffer wasn't big enough, move leftover data to start of debug_buffer */
+	if (debug_buflen)
+		memmove(debug_buffer, debug_buffer+copied, debug_buflen);
+
+	return copied;
+}
+static duk_size_t debugger_peek_cb(void *udata) {
+       return debug_buflen != 0;
+}
+
+/* from duk_debugger.h */
+/* Debugger protocol version is defined in the public API header. */
+
+/* Initial bytes for markers. */
+#define DUK_DBG_IB_EOM                   0x00
+#define DUK_DBG_IB_REQUEST               0x01
+#define DUK_DBG_IB_REPLY                 0x02
+#define DUK_DBG_IB_ERROR                 0x03
+#define DUK_DBG_IB_NOTIFY                0x04
+
+/* Other initial bytes. */
+#define DUK_DBG_IB_INT4                  0x10
+#define DUK_DBG_IB_STR4                  0x11
+#define DUK_DBG_IB_STR2                  0x12
+#define DUK_DBG_IB_BUF4                  0x13
+#define DUK_DBG_IB_BUF2                  0x14
+#define DUK_DBG_IB_UNUSED                0x15
+#define DUK_DBG_IB_UNDEFINED             0x16
+#define DUK_DBG_IB_NULL                  0x17
+#define DUK_DBG_IB_TRUE                  0x18
+#define DUK_DBG_IB_FALSE                 0x19
+#define DUK_DBG_IB_NUMBER                0x1a
+#define DUK_DBG_IB_OBJECT                0x1b
+#define DUK_DBG_IB_POINTER               0x1c
+#define DUK_DBG_IB_LIGHTFUNC             0x1d
+#define DUK_DBG_IB_HEAPPTR               0x1e
+/* The short string/integer initial bytes starting from 0x60 don't have
+ * defines now.
+ */
+
+/* Error codes. */
+#define DUK_DBG_ERR_UNKNOWN              0x00
+#define DUK_DBG_ERR_UNSUPPORTED          0x01
+#define DUK_DBG_ERR_TOOMANY              0x02
+#define DUK_DBG_ERR_NOTFOUND             0x03
+#define DUK_DBG_ERR_APPLICATION          0x04
+
+/* Commands and notifys initiated by Duktape. */
+#define DUK_DBG_CMD_STATUS               0x01
+#define DUK_DBG_CMD_UNUSED_2             0x02  /* Duktape 1.x: print notify */
+#define DUK_DBG_CMD_UNUSED_3             0x03  /* Duktape 1.x: alert notify */
+#define DUK_DBG_CMD_UNUSED_4             0x04  /* Duktape 1.x: log notify */
+#define DUK_DBG_CMD_THROW                0x05
+#define DUK_DBG_CMD_DETACHING            0x06
+#define DUK_DBG_CMD_APPNOTIFY            0x07
+
+/* Commands initiated by debug client. */
+#define DUK_DBG_CMD_BASICINFO            0x10
+#define DUK_DBG_CMD_TRIGGERSTATUS        0x11
+#define DUK_DBG_CMD_PAUSE                0x12
+#define DUK_DBG_CMD_RESUME               0x13
+#define DUK_DBG_CMD_STEPINTO             0x14
+#define DUK_DBG_CMD_STEPOVER             0x15
+#define DUK_DBG_CMD_STEPOUT              0x16
+#define DUK_DBG_CMD_LISTBREAK            0x17
+#define DUK_DBG_CMD_ADDBREAK             0x18
+#define DUK_DBG_CMD_DELBREAK             0x19
+#define DUK_DBG_CMD_GETVAR               0x1a
+#define DUK_DBG_CMD_PUTVAR               0x1b
+#define DUK_DBG_CMD_GETCALLSTACK         0x1c
+#define DUK_DBG_CMD_GETLOCALS            0x1d
+#define DUK_DBG_CMD_EVAL                 0x1e
+#define DUK_DBG_CMD_DETACH               0x1f
+#define DUK_DBG_CMD_DUMPHEAP             0x20
+#define DUK_DBG_CMD_GETBYTECODE          0x21
+#define DUK_DBG_CMD_APPREQUEST           0x22
+#define DUK_DBG_CMD_GETHEAPOBJINFO       0x23
+#define DUK_DBG_CMD_GETOBJPROPDESC       0x24
+#define DUK_DBG_CMD_GETOBJPROPDESCRANGE  0x25
+
+static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t length) {
+	/* Protocol described in duktape's tree's doc/debugger.rst
+	 * We don't get all infos at once so need many static values
+	 * for state machinery.
+	 */
+	static int handshake_seen = 0;
+	static char curmsg = DUK_DBG_IB_EOM;
+	static char command;
+	static char word;
+	static char strlen;
+	unsigned char *buf = (unsigned char*) buffer; /* for unsigned arithmetic */
+	int sz = 0;
+
+	if (length == 0)
+		return 0;
+
+	if (!handshake_seen) {
+		if (buffer[0] != '2') {
+			fprintf(stderr, "Invalid debug protocol");
+			return 0;
+		}
+		handshake_seen = 1;
+		return length;
+	}
+
+	switch (curmsg) {
+	case DUK_DBG_IB_EOM: /* new message */
+		curmsg = buffer[0];
+		command = 0;
+		return 1 + debugger_write_cb(udata, buffer+1, length-1);
+	case DUK_DBG_IB_NOTIFY:
+		switch (command) {
+		case 0:
+			command = buf[0] - 0x80; /* small int */
+			word = 0;
+			return 1 + debugger_write_cb(udata, buffer+1, length-1);
+		case DUK_DBG_CMD_STATUS:
+			/* NFY <int: 1> <int: state> <str: filename> <str: funcname> <int: linenumber> <int: pc> EOM */
+			switch (word) {
+			case 0:
+				if (buf[0] - 0x80 == 1) {
+					/* paused, must resume */
+					debug_buffer[debug_buflen++] = DUK_DBG_IB_REQUEST;
+					debug_buffer[debug_buflen++] = 0x80 + DUK_DBG_CMD_RESUME;
+					debug_buffer[debug_buflen++] = DUK_DBG_IB_EOM;
+				}
+				word++;
+				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+			case 1:
+			case 3:
+				if (buf[0] < 0x60 || buf[0] > 0x7f) {
+					fprintf(stderr, "unhandled string longer than 32\n");
+					return 0;
+				}
+				strlen = buf[0] - 0x60;
+				word++;
+				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+			case 2:
+			case 4:
+				sz = MIN(length, strlen);
+				if (sz == strlen)
+					word++;
+				return sz + debugger_write_cb(udata, buffer+sz, length-sz);
+			case 5:
+			case 6:
+				word++;
+				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+			case 7:
+			default:
+				if (buffer[0] != DUK_DBG_IB_EOM) {
+					fprintf(stderr, "should have gotten EOM here...\n");
+					return 0;
+				}
+				curmsg = DUK_DBG_IB_EOM;
+				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+			}
+
+		case DUK_DBG_CMD_THROW:
+			/* NFY <int: 5> <int: fatal> <str: msg> <str: filename> <int: linenumber> EOM */
+			switch (word) {
+			case 0:
+				printf("%s throw: ", buf[0] - 0x80 == 0 ? "caught" : "uncaught");
+				word++;
+				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+			case 1:
+			case 3:
+				if (buf[0] < 0x60 || buf[0] > 0x7f) {
+					fprintf(stderr, "unhandled string longer than 32\n");
+					return 0;
+				}
+				strlen = buf[0] - 0x60;
+				word++;
+				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+			case 2:
+				sz = MIN(length, strlen);
+				if (sz == strlen)
+					word++;
+				printf("%*s", sz, buffer);
+				return sz + debugger_write_cb(udata, buffer+sz, length-sz);
+			case 4:
+				sz = MIN(length, strlen);
+				if (sz == strlen)
+					word++;
+				return sz + debugger_write_cb(udata, buffer+sz, length-sz);
+			case 5:
+				printf("(line %d)\n", buf[0]-0x80);
+				word++;
+				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+			case 6:
+			default:
+				if (buffer[0] != DUK_DBG_IB_EOM) {
+					fprintf(stderr, "should have gotten EOM here...\n");
+					return 0;
+				}
+				curmsg = DUK_DBG_IB_EOM;
+				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+			}
+		case DUK_DBG_CMD_DETACHING:
+			/* NFY <int: 6> <int: reason> [<str: msg>] EOM */
+			switch (word) {
+			case 0:
+				printf("detach reason: %hd ", buf[0] - 0x80);
+				word++;
+				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+			case 2:
+				sz = MIN(length, strlen);
+				if (sz == strlen)
+					word++;
+				printf("%*s", sz, buffer);
+				return sz + debugger_write_cb(udata, buffer+sz, length-sz);
+			case 1:
+			case 3:
+			default:
+				if (buffer[0] != DUK_DBG_IB_EOM) {
+					if (buf[0] < 0x60 || buf[0] > 0x7f) {
+						fprintf(stderr, "unhandled string longer than 32\n");
+						return 0;
+					}
+					strlen = buf[0] - 0x60;
+					word++;
+					return 1 + debugger_write_cb(udata, buffer+1, length-1);
+				}
+				printf("\n");
+				curmsg = DUK_DBG_IB_EOM;
+				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+			}
+
+		default:
+			fprintf(stderr, "unhandled command: %d\n", command);
+			return 0;
+		}
+
+	case DUK_DBG_IB_REPLY:
+		/* for now just skip until EOM. and hope no null byte in any string */
+		while (buf[sz++] != DUK_DBG_IB_EOM);
+		curmsg = DUK_DBG_IB_EOM;
+		return sz;
+	default:
+		fprintf(stderr, "unhandled marker: %d\n", curmsg);
+		return 0;
+	}
+}
+
+static duk_idx_t debugger_request(duk_context *ctx, void *udata, duk_idx_t nvalues) {
+	fprintf(stderr, "debugger_request %p %p %d\n", ctx, udata, nvalues);
+        fflush(stderr);
+#if 0
+        const char *cmd;
+        int i;
+
+        if (nvalues < 1) {
+                duk_push_string(ctx, "missing AppRequest argument(s)");
+                return -1;
+        }
+
+        cmd = duk_get_string(ctx, -nvalues + 0);
+
+        if (cmd && strcmp(cmd, "CommandLine") == 0) {
+                if (!duk_check_stack(ctx, main_argc)) {
+                        /* Callback should avoid errors for now, so use
+                         * duk_check_stack() rather than duk_require_stack().
+                         */
+                        duk_push_string(ctx, "failed to extend stack");
+                        return -1;
+                }
+                for (i = 0; i < main_argc; i++) {
+                        duk_push_string(ctx, main_argv[i]);
+                }
+                return main_argc;
+        }
+#endif
+        duk_push_sprintf(ctx, "command not supported");
+        return -1;
+}
+
+static void debugger_detached(duk_context *ctx, void *udata) {
+        fprintf(stderr, "Debugger detached, udata: %p\n", (void *) udata);
+        fflush(stderr);
+
+#if 0
+        if (debugger_reattach) {
+                /* For automatic reattach testing. */
+                duk_debugger_attach(ctx,
+                                    duk_trans_socket_read_cb,
+                                    duk_trans_socket_write_cb,
+                                    duk_trans_socket_peek_cb,
+                                    duk_trans_socket_read_flush_cb,
+                                    duk_trans_socket_write_flush_cb,
+                                    debugger_request,
+                                    debugger_detached,
+                                    NULL);
+        }
+#endif
+}
+
+
 int js_main(void)
 {
 	effects = initString(&eff_l);
@@ -154,6 +460,17 @@ int js_main(void)
 	duk_put_prop_string(context0, -2, "compiled");
 	context0_obj = duk_get_heapptr(context0, -1);
 	duk_pop(context0);
+	fprintf(stderr, "Enabling debugger\n");
+	fflush(stderr);
+	duk_debugger_attach(context0,
+			    debugger_read_cb,
+			    debugger_write_cb,
+			    debugger_peek_cb,
+			    NULL /* read_flush_cb */,
+			    NULL /* write_flush_cb */,
+			    debugger_request,
+			    debugger_detached,
+			    NULL /* udata */);
 	return 0;
 }				/* js_main */
 
