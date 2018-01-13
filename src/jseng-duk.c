@@ -357,7 +357,10 @@ read_more:
 			/* NFY <int: 5> <int: fatal> <str: msg> <str: filename> <int: linenumber> EOM */
 			switch (word) {
 			case 0:
-				printf("%s throw: ", buf[0] - 0x80 == 0 ? "caught" : "uncaught");
+				/* don't print if in timer (spam!) */
+				if (intimer) {
+					printf("%s throw: ", buf[0] - 0x80 == 0 ? "caught" : "uncaught");
+				}
 				word++;
 				READ_MORE(1);
 			case 1:

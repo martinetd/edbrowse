@@ -2294,12 +2294,14 @@ void delTimers(struct ebFrame *f)
 	debugPrint(4, "%d timers deleted", delcount);
 }				/* delTimers */
 
+int intimer = 0;
 void runTimer(void)
 {
 	struct jsTimer *jt;
 	struct ebWindow *save_cw = cw;
 	struct ebFrame *save_cf = cf;
 
+	intimer = 1;
 	currentTime();
 
 	if ((jt = soonest())
@@ -2350,6 +2352,7 @@ skip_execution:
 
 	cw = save_cw;
 	cf = save_cf;
+	intimer = 0;
 }				/* runTimer */
 
 void javaOpensWindow(const char *href, const char *name)

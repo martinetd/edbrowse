@@ -313,6 +313,7 @@ extern char *cookieFile;	/* persistent cookies */
 extern char *cacheDir;	/* directory for a persistent cache of http pages */
 extern int cacheSize; /* in megabytes */
 extern int cacheCount; /* number of cache files */
+extern int intimer; /* wether we are un runTimer() */
 
 struct listHead {
 	void *next;
