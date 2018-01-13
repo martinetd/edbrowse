@@ -235,15 +235,13 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 	 * for state machinery.
 	 */
 	static int handshake_seen = 0;
-	static char curmsg = DUK_DBG_IB_EOM;
-	static char command;
-	static char word;
-	static char strlen;
+	static unsigned char curmsg = DUK_DBG_IB_EOM;
+	static unsigned char command;
+	static unsigned char word;
+	static size_t strlen;
+
 	unsigned char *buf = (unsigned char*) buffer; /* for unsigned arithmetic */
 	int sz = 0;
-
-	if (length == 0)
-		return 0;
 
 	if (!handshake_seen) {
 		if (buffer[0] != '2') {
@@ -256,15 +254,15 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 
 	switch (curmsg) {
 	case DUK_DBG_IB_EOM: /* new message */
-		curmsg = buffer[0];
+		curmsg = buf[0];
 		command = 0;
-		return 1 + debugger_write_cb(udata, buffer+1, length-1);
+		return 1;
 	case DUK_DBG_IB_NOTIFY:
 		switch (command) {
 		case 0:
 			command = buf[0] - 0x80; /* small int */
 			word = 0;
-			return 1 + debugger_write_cb(udata, buffer+1, length-1);
+			return 1;
 		case DUK_DBG_CMD_STATUS:
 			/* NFY <int: 1> <int: state> <str: filename> <str: funcname> <int: linenumber> <int: pc> EOM */
 			switch (word) {
@@ -276,7 +274,7 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 					debug_buffer[debug_buflen++] = DUK_DBG_IB_EOM;
 				}
 				word++;
-				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+				return 1;
 			case 1:
 			case 3:
 				if (buf[0] < 0x60 || buf[0] > 0x7f) {
@@ -285,25 +283,26 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 				}
 				strlen = buf[0] - 0x60;
 				word++;
-				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+				return 1;
 			case 2:
 			case 4:
 				sz = MIN(length, strlen);
-				if (sz == strlen)
+				strlen -= sz;
+				if (strlen == 0)
 					word++;
-				return sz + debugger_write_cb(udata, buffer+sz, length-sz);
+				return sz;
 			case 5:
 			case 6:
 				word++;
-				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+				return 1;
 			case 7:
 			default:
-				if (buffer[0] != DUK_DBG_IB_EOM) {
+				if (buf[0] != DUK_DBG_IB_EOM) {
 					fprintf(stderr, "should have gotten EOM here...\n");
 					return 0;
 				}
 				curmsg = DUK_DBG_IB_EOM;
-				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+				return 1;
 			}
 
 		case DUK_DBG_CMD_THROW:
@@ -312,7 +311,7 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 			case 0:
 				printf("%s throw: ", buf[0] - 0x80 == 0 ? "caught" : "uncaught");
 				word++;
-				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+				return 1;
 			case 1:
 			case 3:
 				if (buf[0] < 0x60 || buf[0] > 0x7f) {
@@ -321,30 +320,32 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 				}
 				strlen = buf[0] - 0x60;
 				word++;
-				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+				return 1;
 			case 2:
 				sz = MIN(length, strlen);
-				if (sz == strlen)
+				strlen -= sz;
+				if (strlen == 0)
 					word++;
-				printf("%*s", sz, buffer);
-				return sz + debugger_write_cb(udata, buffer+sz, length-sz);
+				printf("%*s", sz, buf);
+				return sz;
 			case 4:
 				sz = MIN(length, strlen);
-				if (sz == strlen)
+				strlen -= sz;
+				if (strlen == 0)
 					word++;
-				return sz + debugger_write_cb(udata, buffer+sz, length-sz);
+				return sz;
 			case 5:
 				printf("(line %d)\n", buf[0]-0x80);
 				word++;
-				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+				return 1;
 			case 6:
 			default:
-				if (buffer[0] != DUK_DBG_IB_EOM) {
+				if (buf[0] != DUK_DBG_IB_EOM) {
 					fprintf(stderr, "should have gotten EOM here...\n");
 					return 0;
 				}
 				curmsg = DUK_DBG_IB_EOM;
-				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+				return 1;
 			}
 		case DUK_DBG_CMD_DETACHING:
 			/* NFY <int: 6> <int: reason> [<str: msg>] EOM */
@@ -352,28 +353,29 @@ static duk_size_t debugger_write_cb(void *udata, const char *buffer, duk_size_t 
 			case 0:
 				printf("detach reason: %hd ", buf[0] - 0x80);
 				word++;
-				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+				return 1;
 			case 2:
 				sz = MIN(length, strlen);
-				if (sz == strlen)
+				strlen -= sz;
+				if (strlen == 0)
 					word++;
-				printf("%*s", sz, buffer);
-				return sz + debugger_write_cb(udata, buffer+sz, length-sz);
+				printf("%*s", sz, buf);
+				return sz;
 			case 1:
 			case 3:
 			default:
-				if (buffer[0] != DUK_DBG_IB_EOM) {
+				if (buf[0] != DUK_DBG_IB_EOM) {
 					if (buf[0] < 0x60 || buf[0] > 0x7f) {
 						fprintf(stderr, "unhandled string longer than 32\n");
 						return 0;
 					}
 					strlen = buf[0] - 0x60;
 					word++;
-					return 1 + debugger_write_cb(udata, buffer+1, length-1);
+					return 1;
 				}
 				printf("\n");
 				curmsg = DUK_DBG_IB_EOM;
-				return 1 + debugger_write_cb(udata, buffer+1, length-1);
+				return 1;
 			}
 
 		default:
